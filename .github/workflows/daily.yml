@@ -2,11 +2,16 @@ name: Daily job digest
 
 on:
   schedule:
-    - cron: "0 12 * * *"
-  workflow_dispatch:
+    - cron: "0 12 * * *"   # 12:00 UTC, about 7-8am Eastern
+  workflow_dispatch:        # lets you run it by hand from the Actions tab
+    inputs:
+      lookback_hours:
+        description: "Preview: show matches from the last N hours (e.g. 168). Blank = normal run."
+        required: false
+        default: ""
 
 permissions:
-  contents: write
+  contents: write           # lets the job save seen.json so you never get repeats
 
 jobs:
   digest:
@@ -22,6 +27,7 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          LOOKBACK_HOURS: ${{ github.event.inputs.lookback_hours }}
       - name: Save seen jobs
         run: |
           git config user.name "job-bot"
