@@ -1,0 +1,6 @@
+# One company per line. The script tries to find each company's public job feed
+# (Greenhouse, Lever, Ashby). Add "| greenhouse:slug" to pin a specific board.
+# Check the "Source health" section of your first email to confirm matches.
+# Lines starting with # are ignored.
+Chess.com
+Unknown Worlds
