@@ -36,7 +36,21 @@ TITLE_KEYWORDS = [
     "product owner", "ecommerce", "e-commerce", "creative operations",
     "operations manager", "delivery manager", "scrum master", "release manager",
     "game operations", "live ops", "liveops", "product operations",
+    # entry / mid-level and adjacent roles
+    "project coordinator", "program coordinator", "production coordinator",
+    "production assistant", "operations coordinator", "operations specialist",
+    "operations associate", "operations analyst", "business operations",
+    "studio operations", "publishing operations", "content operations",
+    "product analyst", "business analyst", "product specialist",
+    "implementation manager", "implementation specialist", "delivery lead",
+    "merchandising", "marketplace manager", "digital product",
+    "agile coach", "project lead", "program lead",
 ]
+
+# Skip senior / executive titles (you're switching fields). Set to False to see them.
+SKIP_SENIOR_TITLES = True
+SENIOR_TITLE_WORDS = ["director", "vp", "svp", "evp", "vice president", "chief",
+                      "head of", "principal", "staff"]
 
 # Skip a role if any of these appear in its title or company name...
 EXCLUDE_TERMS = [
@@ -136,6 +150,7 @@ def word_regex(words):
 
 
 TITLE_RE = word_regex(TITLE_KEYWORDS)
+SENIOR_RE = word_regex(SENIOR_TITLE_WORDS)
 EXCLUDE_RE = word_regex(EXCLUDE_TERMS)
 PTO_RE = re.compile("|".join(PTO_PATTERNS), re.I)
 BENEFIT_INSURANCE_RE = re.compile(
@@ -444,6 +459,8 @@ def select(jobs, seen):
     keep, dup_keys = [], set()
     for j in jobs:
         if not j.url or not TITLE_RE.search(j.title):
+            continue
+        if SKIP_SENIOR_TITLES and SENIOR_RE.search(j.title):
             continue
         window = SOURCE_MAX_AGE_HOURS.get(j.source, MAX_AGE_HOURS)
         if j.posted and j.posted < cutoff - timedelta(hours=window):
