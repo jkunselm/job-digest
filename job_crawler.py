@@ -454,24 +454,41 @@ def job_keys(j):
     return [url, f"{j.company.lower().strip()}|{j.title.lower().strip()}"]
 
 
-def select(jobs, seen):
+def lookback_hours():
+    """Set by the manual 'preview' run: look further back and ignore the seen list."""
+    try:
+        return int(os.environ.get("LOOKBACK_HOURS", "").strip() or 0)
+    except ValueError:
+        return 0
+
+
+def select(jobs, seen, stats=None):
+    """Filter jobs. If stats (a dict) is given, it's filled with per-source funnel counts:
+    [fetched, title match, recent, remote & allowed, new]."""
     cutoff = now_utc()
     keep, dup_keys = [], set()
+    override = lookback_hours()
     for j in jobs:
+        row = stats.setdefault(j.company if j.watch else j.source, [0] * 5) if stats is not None else [0] * 5
+        row[0] += 1
         if not j.url or not TITLE_RE.search(j.title):
             continue
         if SKIP_SENIOR_TITLES and SENIOR_RE.search(j.title):
             continue
-        window = SOURCE_MAX_AGE_HOURS.get(j.source, MAX_AGE_HOURS)
+        row[1] += 1
+        window = override or SOURCE_MAX_AGE_HOURS.get(j.source, MAX_AGE_HOURS)
         if j.posted and j.posted < cutoff - timedelta(hours=window):
             continue
         if j.posted and j.posted > cutoff + timedelta(hours=2):
             continue
+        row[2] += 1
         if not j.remote or not location_ok(j.location) or excluded(j):
             continue
+        row[3] += 1
         keys = job_keys(j)
         if any(k in seen or k in dup_keys for k in keys):
             continue
+        row[4] += 1
         dup_keys.update(keys)
         j.pto = bool(PTO_RE.search(j.text))
         keep.append(j)
@@ -480,7 +497,7 @@ def select(jobs, seen):
     return keep
 
 
-def render(matches, health, watch_report):
+def render(matches, health, watch_report, funnel=None):
     def when(j):
         if not j.posted:
             return "date not listed"
@@ -503,6 +520,10 @@ def render(matches, health, watch_report):
 
     notes = [f"{n}: {c} fetched" + (f" (ERROR: {e})" if e else "") for n, c, e in health]
     notes += watch_report
+    if funnel:
+        notes.append("")
+        notes.append("Where roles dropped out (fetched > title match > recent > remote & allowed > new):")
+        notes += funnel
     rows.append("<hr><p style='color:#666;font-size:12px'><b>Source health</b><br>"
                 + "<br>".join(html.escape(n) for n in notes)
                 + "<br>Boards: Remotive, RemoteOK, We Work Remotely, Work With Indies, Remote Game Jobs.</p>")
@@ -550,15 +571,23 @@ def main():
                             f"New postings will appear starting tomorrow.")
     jobs += fresh
 
-    matches = select(jobs, seen)
-    html_body, text_body = render(matches, health, watch_report)
-    subject = f"Job digest: {len(matches)} new remote match{'es' if len(matches) != 1 else ''} " \
+    preview = lookback_hours() > 0   # manual preview run: ignore seen list, don't save anything
+    stats = {}
+    matches = select(jobs, {} if preview else seen, stats)
+    funnel = [f"{k}: {v[0]} > {v[1]} > {v[2]} > {v[3]} > {v[4]}"
+              for k, v in sorted(stats.items()) if v[0]]
+    html_body, text_body = render(matches, health, watch_report, funnel)
+    tag = f"[{lookback_hours()}h preview] " if preview else ""
+    subject = f"{tag}Job digest: {len(matches)} new remote match{'es' if len(matches) != 1 else ''} " \
               f"({now_utc():%b %d})"
 
     if dry:
         print(subject, "\n", text_body)
         return
     send_email(subject, html_body, text_body)
+    if preview:
+        print(subject)
+        return
 
     today = f"{now_utc():%Y-%m-%d}"
     for j in matches:
