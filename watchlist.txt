@@ -1,6 +1,21 @@
 # One company per line. The script tries to find each company's public job feed
 # (Greenhouse, Lever, Ashby). Add "| greenhouse:slug" to pin a specific board.
-# Check the "Source health" section of your first email to confirm matches.
+# Check "Source health" in your emails: it shows which companies were found
+# (with a sample link so you can confirm it's the right company).
 # Lines starting with # are ignored.
-Chess.com
+
+# Your seed list
+Chess.com | rippling:chess
 Unknown Worlds
+
+# Games / tabletop / community platforms
+Discord
+Roblox
+Epic Games
+Niantic
+Kickstarter
+
+# Ecommerce tech (matches your Shopify / Klaviyo background)
+Klaviyo
+Gorgias
+Yotpo
