@@ -52,6 +52,15 @@ SKIP_SENIOR_TITLES = True
 SENIOR_TITLE_WORDS = ["director", "vp", "svp", "evp", "vice president", "chief",
                       "head of", "principal", "staff"]
 
+# Optional: also hide "Senior" / "Lead" style titles. Off by default; set True to use.
+SKIP_SENIOR_LEVEL = False
+SENIOR_LEVEL_WORDS = ["senior", "sr", "lead", "group"]
+
+# Titles that match a keyword above but aren't what you're after.
+NOISE_TITLE_WORDS = ["recruiter", "recruiting", "talent", "payroll", "accounting", "finance",
+                     "legal", "human resources", "people operations", "sales operations",
+                     "revenue operations", "network operations", "security operations", "devops"]
+
 # Skip a role if any of these appear in its title or company name...
 EXCLUDE_TERMS = [
     "casino", "gambling", "gambler", "sportsbook", "sports betting", "betting",
@@ -151,6 +160,8 @@ def word_regex(words):
 
 TITLE_RE = word_regex(TITLE_KEYWORDS)
 SENIOR_RE = word_regex(SENIOR_TITLE_WORDS)
+LEVEL_RE = word_regex(SENIOR_LEVEL_WORDS)
+NOISE_RE = word_regex(NOISE_TITLE_WORDS)
 EXCLUDE_RE = word_regex(EXCLUDE_TERMS)
 PTO_RE = re.compile("|".join(PTO_PATTERNS), re.I)
 BENEFIT_INSURANCE_RE = re.compile(
@@ -474,6 +485,10 @@ def select(jobs, seen, stats=None):
         if not j.url or not TITLE_RE.search(j.title):
             continue
         if SKIP_SENIOR_TITLES and SENIOR_RE.search(j.title):
+            continue
+        if SKIP_SENIOR_LEVEL and LEVEL_RE.search(j.title):
+            continue
+        if NOISE_RE.search(j.title):
             continue
         row[1] += 1
         window = override or SOURCE_MAX_AGE_HOURS.get(j.source, MAX_AGE_HOURS)
