@@ -20,11 +20,13 @@ from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
 import requests
+from urllib.parse import quote
 
 # =============================== CONFIG ===============================
 
 MAX_AGE_HOURS = 24          # only roles posted within this window
-REMOTIVE_MAX_AGE_HOURS = 48  # Remotive's free feed runs behind, so give it extra room
+# Some sources run behind or only publish dates (no times), so give them extra room:
+SOURCE_MAX_AGE_HOURS = {"Remotive": 48, "Work With Indies": 48}
 
 # A role must have one of these in its TITLE.
 TITLE_KEYWORDS = [
@@ -58,7 +60,7 @@ PTO_PATTERNS = [
     r"take what you need",
 ]
 
-REMOTIVE_URL = "https://remotive.com/api/remote-jobs?limit=500"
+REMOTIVE_SEARCHES = ["product manager", "project manager", "producer", "ecommerce"]
 REMOTEOK_URL = "https://remoteok.com/api"
 WWR_FEEDS = [
     "https://weworkremotely.com/categories/remote-product-jobs.rss",
@@ -66,6 +68,9 @@ WWR_FEEDS = [
     "https://weworkremotely.com/categories/remote-sales-and-marketing-jobs.rss",
     "https://weworkremotely.com/categories/all-other-remote-jobs.rss",
 ]
+
+WWI_FEED = "https://workwithindies.com/careers/rss.xml"        # Work With Indies
+RGJ_FEED = "https://remotegamejobs.com/feed.rss"               # Remote Game Jobs
 
 WATCHLIST_FILE = "watchlist.txt"
 SEEN_FILE = "seen.json"
@@ -166,13 +171,24 @@ def excluded(job):
 # ------------------------------ sources ------------------------------
 
 def fetch_remotive():
-    out = []
-    for j in get_json(REMOTIVE_URL).get("jobs", []):
-        out.append(Job(
-            title=j.get("title", ""), company=j.get("company_name", ""),
-            url=j.get("url", ""), location=j.get("candidate_required_location", ""),
-            posted=parse_iso(j.get("publication_date")),
-            text=strip_html(j.get("description")), source="Remotive"))
+    out, errors, urls = [], [], set()
+    for term in REMOTIVE_SEARCHES:  # kept to a few calls a day to respect their limits
+        try:
+            data = get_json(f"https://remotive.com/api/remote-jobs?search={quote(term)}")
+        except Exception as e:
+            errors.append(f"{term}: {e}")
+            continue
+        for j in data.get("jobs", []):
+            if j.get("url") in urls:
+                continue
+            urls.add(j.get("url"))
+            out.append(Job(
+                title=j.get("title", ""), company=j.get("company_name", ""),
+                url=j.get("url", ""), location=j.get("candidate_required_location", ""),
+                posted=parse_iso(j.get("publication_date")),
+                text=strip_html(j.get("description")), source="Remotive"))
+    if errors and not out:
+        raise RuntimeError("; ".join(errors))
     return out
 
 
@@ -220,8 +236,65 @@ def fetch_wwr():
     return out
 
 
+def _rss_items(url):
+    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    r.raise_for_status()
+    return ET.fromstring(r.content).iter("item")
+
+
+def _pubdate(item):
+    try:
+        d = parsedate_to_datetime(item.findtext("pubDate"))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_work_with_indies():
+    """Titles look like: 'Studio is hiring a Producer to work from Anywhere'."""
+    out = []
+    for it in _rss_items(WWI_FEED):
+        m = re.match(r"^\s*(.*?) is hiring an? (.*?) to work from (.*?)\s*$",
+                     it.findtext("title") or "")
+        if not m:
+            continue
+        company, title, loc = (x.strip() for x in m.groups())
+        out.append(Job(title=title, company=company, url=(it.findtext("link") or "").strip(),
+                       location=loc, posted=_pubdate(it),
+                       text=strip_html(it.findtext("description")), source="Work With Indies"))
+    return out
+
+
+NON_US_REGIONS = re.compile(
+    r"\b(uk|u\.k\.|united kingdom|europe|european|eu|emea|canada|quebec|australia|cet|"
+    r"gmt|india|latam|brazil)\b", re.I)
+US_OK = re.compile(r"\b(us|usa|united states|north america|americas|worldwide|anywhere|global)\b", re.I)
+
+
+def fetch_remote_game_jobs():
+    """Titles look like: 'Studio is hiring Senior Producer (Remote Job)'. The feed has
+    no location field, so we look for region hints at the start of the description."""
+    out = []
+    for it in _rss_items(RGJ_FEED):
+        m = re.match(r"^\s*(.*?) is hiring\s+(.*?)\s*\(Remote Job\)\s*$", it.findtext("title") or "")
+        if not m:
+            continue
+        company, title = m.group(1).strip(), m.group(2).strip()
+        text = strip_html(it.findtext("description"))
+        head = text[:600]
+        loc = ""
+        if NON_US_REGIONS.search(head) and not US_OK.search(head):
+            loc = "UK/Europe/Canada only (per description)"
+        out.append(Job(title=title, company=company, url=(it.findtext("link") or "").strip(),
+                       location=loc, posted=_pubdate(it), text=text,
+                       source="Remote Game Jobs"))
+    return out
+
+
 BOARD_SOURCES = [("Remotive", fetch_remotive), ("RemoteOK", fetch_remoteok),
-                 ("We Work Remotely", fetch_wwr)]
+                 ("We Work Remotely", fetch_wwr),
+                 ("Work With Indies", fetch_work_with_indies),
+                 ("Remote Game Jobs", fetch_remote_game_jobs)]
 
 
 # ---- company career pages (applicant tracking systems with public feeds) ----
@@ -269,7 +342,33 @@ def ashby(slug):
     return out
 
 
-ATS = {"greenhouse": greenhouse, "lever": lever, "ashby": ashby}
+def _label(x):
+    if isinstance(x, dict):
+        return x.get("label") or x.get("name") or ""
+    return x or ""
+
+
+def rippling(slug):
+    """Rippling's public board feed lists titles and locations but no post dates."""
+    data = get_json(f"https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs")
+    rows = data if isinstance(data, list) else (data.get("jobs") or data.get("items"))
+    if rows is None:
+        raise ValueError("unexpected Rippling response")
+    out = []
+    for r in rows:
+        jid = r.get("uuid") or r.get("id")
+        loc = _label(r.get("workLocation")) or _label(r.get("location"))
+        out.append(Job(
+            title=r.get("name") or r.get("title") or "", company="",
+            url=r.get("url") or f"https://ats.rippling.com/{slug}/jobs/{jid}",
+            location=loc, posted=None, text=_label(r.get("department")),
+            source="Rippling", remote="remote" in loc.lower()))
+    return out
+
+
+ATS = {"greenhouse": greenhouse, "lever": lever, "ashby": ashby, "rippling": rippling}
+GUESSABLE = ("greenhouse", "lever", "ashby")   # Rippling must be pinned in watchlist.txt
+UNDATED_SOURCES = {"Rippling"}                 # feeds with no post date: we track "new" ourselves
 
 
 def slug_guesses(name):
@@ -303,7 +402,7 @@ def fetch_watchlist():
             ats, slug = pin.split(":", 1)
             attempts = [(ats.strip().lower(), slug.strip())]
         else:
-            attempts = [(ats, s) for s in slug_guesses(name) for ats in ATS]
+            attempts = [(ats, s) for s in slug_guesses(name) for ats in GUESSABLE]
         found = False
         for ats, slug in attempts:
             fn = ATS.get(ats)
@@ -346,7 +445,7 @@ def select(jobs, seen):
     for j in jobs:
         if not j.url or not TITLE_RE.search(j.title):
             continue
-        window = REMOTIVE_MAX_AGE_HOURS if j.source == "Remotive" else MAX_AGE_HOURS
+        window = SOURCE_MAX_AGE_HOURS.get(j.source, MAX_AGE_HOURS)
         if j.posted and j.posted < cutoff - timedelta(hours=window):
             continue
         if j.posted and j.posted > cutoff + timedelta(hours=2):
@@ -389,7 +488,7 @@ def render(matches, health, watch_report):
     notes += watch_report
     rows.append("<hr><p style='color:#666;font-size:12px'><b>Source health</b><br>"
                 + "<br>".join(html.escape(n) for n in notes)
-                + "<br>Boards: Remotive, RemoteOK, We Work Remotely.</p>")
+                + "<br>Boards: Remotive, RemoteOK, We Work Remotely, Work With Indies, Remote Game Jobs.</p>")
     text.append("\nSource health:\n" + "\n".join(notes))
     return "".join(rows), "\n".join(text)
 
@@ -418,7 +517,21 @@ def main():
         except Exception as e:
             health.append((name, 0, str(e)[:150]))
     wjobs, watch_report = fetch_watchlist()
-    jobs += wjobs
+
+    # Undated feeds: the first time we see a company, record its openings silently
+    # (otherwise you'd get every open role). After that, anything new shows up.
+    baseline_keys, fresh = [], []
+    for j in wjobs:
+        marker = f"__baseline__|{j.company.lower()}"
+        if j.source in UNDATED_SOURCES and marker not in seen:
+            baseline_keys += job_keys(j) + [marker]
+            continue
+        fresh.append(j)
+    for name in sorted({k.split("|", 1)[1] for k in baseline_keys if k.startswith("__baseline__")}):
+        n = sum(1 for j in wjobs if j.company.lower() == name and j.source in UNDATED_SOURCES)
+        watch_report.append(f"{name}: first run, saved its {n} current openings as a baseline. "
+                            f"New postings will appear starting tomorrow.")
+    jobs += fresh
 
     matches = select(jobs, seen)
     html_body, text_body = render(matches, health, watch_report)
@@ -434,8 +547,15 @@ def main():
     for j in matches:
         for k in job_keys(j):
             seen[k] = today
+    for k in baseline_keys:
+        seen[k] = today
+    for j in wjobs:  # keep still-open undated postings from looking new after pruning
+        if j.source in UNDATED_SOURCES:
+            for k in job_keys(j):
+                if k in seen:
+                    seen[k] = today
     keep_after = f"{now_utc() - timedelta(days=SEEN_KEEP_DAYS):%Y-%m-%d}"
-    seen = {k: d for k, d in seen.items() if d >= keep_after}
+    seen = {k: d for k, d in seen.items() if d >= keep_after or k.startswith("__baseline__")}
     json.dump(seen, open(SEEN_FILE, "w"), indent=0)
     print(subject)
 
