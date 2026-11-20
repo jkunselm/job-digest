@@ -18,3 +18,15 @@ Kickstarter
 Klaviyo
 Gorgias
 Yotpo
+
+# Others
+Skillshare
+Coursera
+Udemy
+Wanderlog
+Sandbox VR
+TryHackMe
+Innersloth
+thatgamecompany
+StaffPad
+Unity | greenhouse:unity3d
