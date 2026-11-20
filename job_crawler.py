@@ -59,7 +59,10 @@ SENIOR_LEVEL_WORDS = ["senior", "sr", "lead", "group"]
 # Titles that match a keyword above but aren't what you're after.
 NOISE_TITLE_WORDS = ["recruiter", "recruiting", "talent", "payroll", "accounting", "finance",
                      "legal", "human resources", "people operations", "sales operations",
-                     "revenue operations", "network operations", "security operations", "devops"]
+                     "revenue operations", "network operations", "security operations", "devops",
+                     "account executive", "account manager", "sales development",
+                     "business development", "solutions engineer", "sales engineer",
+                     "cleaning"]
 
 # Skip a role if any of these appear in its title or company name...
 EXCLUDE_TERMS = [
@@ -179,6 +182,9 @@ def location_ok(loc):
     l = (loc or "").lower().strip()
     if not l or re.fullmatch(r"[\s\-–,()]*(remote|anywhere|worldwide|global)[\s\-–,()]*", l):
         return True
+    if re.search(r"\b(latin|south|central) america\b|\blatam\b", l) and not re.search(
+            r"\b(usa|u\.s\.a?\.?|us|united states|north america)\b", l):
+        return False
     return bool(re.search(
         r"\b(usa|u\.s\.a?\.?|us|united states|america|americas|north america|"
         r"worldwide|anywhere|global|ohio|eastern|est|et)\b", l))
@@ -473,7 +479,7 @@ def lookback_hours():
         return 0
 
 
-def select(jobs, seen, stats=None):
+def select(jobs, seen, stats=None, samples=None):
     """Filter jobs. If stats (a dict) is given, it's filled with per-source funnel counts:
     [fetched, title match, recent, remote & allowed, new]."""
     cutoff = now_utc()
@@ -490,6 +496,8 @@ def select(jobs, seen, stats=None):
             continue
         if NOISE_RE.search(j.title):
             continue
+        if NON_US_REGIONS.search(j.title) and not US_OK.search(j.title):
+            continue   # e.g. "... - LATAM", "(UK)"
         row[1] += 1
         window = override or SOURCE_MAX_AGE_HOURS.get(j.source, MAX_AGE_HOURS)
         if j.posted and j.posted < cutoff - timedelta(hours=window):
@@ -497,7 +505,19 @@ def select(jobs, seen, stats=None):
         if j.posted and j.posted > cutoff + timedelta(hours=2):
             continue
         row[2] += 1
-        if not j.remote or not location_ok(j.location) or excluded(j):
+        if not j.remote:
+            why = "not marked remote"
+        elif not location_ok(j.location):
+            why = "location not allowed"
+        elif excluded(j):
+            why = "excluded term"
+        else:
+            why = None
+        if why:
+            if samples is not None and j.watch:
+                lst = samples.setdefault(j.company, [])
+                if len(lst) < 2:
+                    lst.append(f"{j.title} ({j.location or 'no location'}; {why})")
             continue
         row[3] += 1
         keys = job_keys(j)
@@ -587,10 +607,14 @@ def main():
     jobs += fresh
 
     preview = lookback_hours() > 0   # manual preview run: ignore seen list, don't save anything
-    stats = {}
-    matches = select(jobs, {} if preview else seen, stats)
+    stats, samples = {}, {}
+    matches = select(jobs, {} if preview else seen, stats, samples)
     funnel = [f"{k}: {v[0]} > {v[1]} > {v[2]} > {v[3]} > {v[4]}"
               for k, v in sorted(stats.items()) if v[0]]
+    if samples:
+        funnel.append("")
+        funnel.append("Company-page roles dropped at the remote/location step (examples):")
+        funnel += [f"{k}: " + " | ".join(v) for k, v in sorted(samples.items())]
     html_body, text_body = render(matches, health, watch_report, funnel)
     tag = f"[{lookback_hours()}h preview] " if preview else ""
     subject = f"{tag}Job digest: {len(matches)} new remote match{'es' if len(matches) != 1 else ''} " \
